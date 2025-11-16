@@ -4,8 +4,11 @@ from ..models.chat import DocumentChunk, ChatRequest, ChatResponse
 from ..repositories.vector_repository import VectorRepository
 from ..services.embedding_service import EmbeddingService
 from ..services.ai_service import AIService
+from ..services.translation_service import get_translation_service
 from ..core.config import settings
 from ..core.exceptions import VectorStoreError, EmbeddingError, AIServiceError
+
+logger = logging.getLogger(__name__)
 
 class RAGService:
     """Retrieval-Augmented Generation service for the chatbot"""
@@ -19,57 +22,62 @@ class RAGService:
         self.vector_repository = vector_repository
         self.embedding_service = embedding_service
         self.ai_service = ai_service
+        self.translation_service = get_translation_service()
 
     async def process_query(self, request: ChatRequest) -> ChatResponse:
-        """Process a chat query using RAG pipeline"""
+        """Process a chat query using RAG pipeline with Vietnamese-English translation"""
         try:
-            # Step 1: Generate embedding for the user query
-            query_embedding = await self.embedding_service.generate_query_embedding(request.message)
+            # Step 1: Process query for retrieval (translate if Vietnamese)
+            query_processing = await self.translation_service.process_query_for_retrieval(request.message)
+            retrieval_query = query_processing['retrieval_query']
 
-            # Step 2: Search for relevant documents
+            # Log translation for debugging
+            if query_processing['is_translated']:
+                logger.info(f"Translated Vietnamese query: '{request.message}' → '{retrieval_query}'")
+            else:
+                logger.info(f"Using original query: '{request.message}'")
+
+            # Step 2: Generate embedding for the retrieval query (English if translated)
+            query_embedding = await self.embedding_service.generate_query_embedding(retrieval_query)
+
+            # Step 3: Search for relevant documents using retrieval query
             similar_docs = await self.vector_repository.search_similar(
                 query_embedding=query_embedding,
                 limit=settings.max_retrieved_docs
             )
 
             if not similar_docs:
+                # Use original query in the no-results message
                 return ChatResponse(
-                    message="I couldn't find relevant information in Andrew Ng's Machine Learning Yearning book to answer your question. Please try asking about machine learning concepts, development strategies, or ML system design.",
+                    message=f"I couldn't find relevant information in the Ian Goodfellow Deep Learning book to answer your question: '{request.message}'. Please try asking about deep learning concepts, neural networks, optimization, or technical challenges.",
                     session_id=request.session_id or "default",
-                    sources=[],
-                    confidence=0.0
+                    sources=[]
                 )
 
-            # Step 3: Extract context from similar documents
+            # Step 4: Extract context from similar documents
             context_texts = [doc.content for doc in similar_docs]
             sources = [
                 {
                     "chunk_id": doc.id,
                     "page_number": doc.metadata.get("page_number"),
                     "chapter": doc.metadata.get("chapter"),
-                    "section": doc.metadata.get("section"),
-                    "confidence": getattr(doc, 'confidence', 0.0)
+                    "section": doc.metadata.get("section")
                 }
                 for doc in similar_docs
             ]
 
-            # Step 4: Generate AI response using RAG
+            # Step 5: Generate AI response using ORIGINAL query but retrieved context
+            # This ensures response is in the user's language
             ai_response = await self.ai_service.generate_response(
-                query=request.message,
+                query=request.message,  # Use original Vietnamese query
                 context=context_texts
             )
 
-            # Step 5: Calculate overall confidence
-            avg_confidence = sum(
-                getattr(doc, 'confidence', 0.0) for doc in similar_docs
-            ) / len(similar_docs) if similar_docs else 0.0
-
-            # Step 6: Return response
+            # Step 6: Return response without confidence calculations
             return ChatResponse(
                 message=ai_response,
                 session_id=request.session_id or "default",
-                sources=sources,
-                confidence=avg_confidence
+                sources=sources
             )
 
         except EmbeddingError as e:
@@ -120,7 +128,7 @@ class RAGService:
                 "indexed_documents": True,
                 "vector_store": "Milvus",
                 "embedding_model": settings.embedding_model,
-                "similarity_threshold": settings.similarity_threshold
+                "max_retrieved_docs": settings.max_retrieved_docs
             }
 
         except Exception as e:
@@ -157,22 +165,45 @@ class RAGService:
         Returns dict with context texts and sources
         """
         try:
-            # Generate embedding for the user query
-            query_embedding = await self.embedding_service.generate_query_embedding(query)
+            logger.debug(f"[CONTEXT RETRIEVAL] Starting retrieval for query: '{query[:100]}...' (limit: {limit})")
 
-            # Search for relevant documents
+            # Process query for retrieval (translate if Vietnamese)
+            query_processing = await self.translation_service.process_query_for_retrieval(query)
+            retrieval_query = query_processing['retrieval_query']
+
+            # Log translation for debugging
+            if query_processing['is_translated']:
+                logger.info(f"[CONTEXT RETRIEVAL] Translated query: '{query}' → '{retrieval_query}'")
+            else:
+                logger.debug(f"[CONTEXT RETRIEVAL] Using original query (no translation needed): '{retrieval_query}'")
+
+            # Generate embedding for the retrieval query (English if translated)
+            logger.debug(f"[CONTEXT RETRIEVAL] Generating embedding for: '{retrieval_query[:50]}...'")
+            query_embedding = await self.embedding_service.generate_query_embedding(retrieval_query)
+            logger.debug(f"[CONTEXT RETRIEVAL] Embedding generated successfully (dimension: {len(query_embedding)})")
+
+            # Search for relevant documents using retrieval query
+            logger.debug(f"[CONTEXT RETRIEVAL] Searching for similar documents with limit={limit}")
             similar_docs = await self.vector_repository.search_similar(
                 query_embedding=query_embedding,
                 limit=limit
             )
 
             if not similar_docs:
+                logger.warning(f"[CONTEXT RETRIEVAL] No documents found for query: '{query[:50]}...'")
                 return {
                     'context_texts': [],
                     'sources': [],
                     'has_content': False,
                     'quality_score': 0.0
                 }
+
+            logger.info(f"[CONTEXT RETRIEVAL] Found {len(similar_docs)} documents for query: '{query[:50]}...'")
+
+            # Log document details without confidence scores
+            for i, doc in enumerate(similar_docs):
+                content_preview = doc.content[:100].replace('\n', ' ')
+                logger.debug(f"[CONTEXT RETRIEVAL] Doc {i+1}: preview='{content_preview}...'")
 
             # Extract context from similar documents
             context_texts = [doc.content for doc in similar_docs]
@@ -181,21 +212,26 @@ class RAGService:
                     "chunk_id": doc.id,
                     "page_number": doc.metadata.get("page_number"),
                     "chapter": doc.metadata.get("chapter"),
-                    "section": doc.metadata.get("section"),
-                    "confidence": getattr(doc, 'confidence', 0.0)
+                    "section": doc.metadata.get("section")
                 }
                 for doc in similar_docs
             ]
 
-            # Calculate quality score based on content
+            # Log the complete context texts being returned
+            logger.info(f"[CONTEXT RETRIEVAL] Complete context texts being returned:")
+            for i, context in enumerate(context_texts):
+                context_clean = context.replace('\n', ' ').replace('\r', ' ')
+                logger.info(f"[CONTEXT RETRIEVAL] Context {i+1}/{len(context_texts)}: {context_clean}")
+
+            # Log content metrics without quality scores
             total_content_length = sum(len(text) for text in context_texts)
-            quality_score = min(total_content_length / 1000, 1.0)  # Normalize to 0-1
+            logger.info(f"[CONTEXT RETRIEVAL] Content metrics:")
+            logger.debug(f"[CONTEXT RETRIEVAL]   - Total context length: {total_content_length} chars")
 
             return {
                 'context_texts': context_texts,
                 'sources': sources,
-                'has_content': len(context_texts) > 0,
-                'quality_score': quality_score
+                'has_content': len(context_texts) > 0
             }
 
         except EmbeddingError as e:
@@ -203,22 +239,19 @@ class RAGService:
             return {
                 'context_texts': [],
                 'sources': [],
-                'has_content': False,
-                'quality_score': 0.0
+                'has_content': False
             }
         except VectorStoreError as e:
             logger.error(f"Document retrieval search failed: {e}")
             return {
                 'context_texts': [],
                 'sources': [],
-                'has_content': False,
-                'quality_score': 0.0
+                'has_content': False
             }
         except Exception as e:
             logger.error(f"Unexpected error in document retrieval: {e}")
             return {
                 'context_texts': [],
                 'sources': [],
-                'has_content': False,
-                'quality_score': 0.0
+                'has_content': False
             }

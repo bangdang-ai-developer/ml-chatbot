@@ -20,7 +20,6 @@ class ResponseResult:
     response: str
     strategy_used: str
     sources: List[Dict[str, Any]]
-    confidence: float
     citations: List[Dict[str, Any]]
     explanation: str
     processing_time: float
@@ -38,16 +37,16 @@ class SmartResponseRouter:
         # Templates for hybrid responses
         self.hybrid_templates = {
             'vietnamese': {
-                'introduction': "Chào bạn, để trả lời câu hỏi của bạn, mình sẽ kết hợp thông tin từ tài liệu và kiến thức chung:",
-                'document_section': "\n📚 **Từ tài liệu tham khảo:**\n{document_content}",
-                'general_section': "\n🤖 **Từ kiến thức tổng quan:**\n{general_content}",
-                'conclusion': "\nHy vọng thông tin này hữu ích cho bạn! Bạn có muốn mình giải thích sâu hơn phần nào không?"
+                'introduction': "",  # Remove introduction - start directly with content
+                'document_section': "\n**Thông tin từ tài liệu chuyên khảo:**\n{document_content}",
+                'general_section': "\n**Thông tin bổ sung:**\n{general_content}",
+                'conclusion': ""  # Remove conclusion - end with content
             },
             'english': {
-                'introduction': "Hello! To answer your question, I'll combine information from documents with general knowledge:",
-                'document_section': "\n📚 **From referenced documents:**\n{document_content}",
-                'general_section': "\n🤖 **From general knowledge:**\n{general_content}",
-                'conclusion': "\nI hope this information is helpful! Would you like me to explain any part in more detail?"
+                'introduction': "",  # Remove introduction - start directly with content
+                'document_section': "\n**From referenced documents:**\n{document_content}",
+                'general_section': "\n**Additional information:**\n{general_content}",
+                'conclusion': ""  # Remove conclusion - end with content
             }
         }
 
@@ -66,13 +65,8 @@ class SmartResponseRouter:
             # Classify query intent
             intent_analysis = self.intent_classifier.classify_intent(query, query_analysis)
 
-            # Get response strategy with reasonable default context quality
-            # For deep learning queries with both books indexed, use higher context quality
-            default_context_quality = 0.5  # Default to moderate quality for hybrid queries
-            if intent_analysis.intent.value in ['hybrid'] and any(keyword in query.lower() for keyword in ['deep learning', 'học sâu', 'neural network', 'mạng nơ-ron']):
-                default_context_quality = 0.7  # Higher quality for ML/DL specific queries
-
-            strategy = self.intent_classifier.get_response_strategy(intent_analysis, default_context_quality)
+            # Get response strategy - RAG-first approach without quality thresholds
+            strategy = self.intent_classifier.get_response_strategy(intent_analysis)
 
             logger.info(f"Query: '{query[:50]}...' - Intent: {intent_analysis.intent.value}, Strategy: {strategy}")
 
@@ -102,8 +96,7 @@ class SmartResponseRouter:
                 response="Xin lỗi, mình gặp lỗi khi xử lý câu hỏi của bạn. Bạn có thể thử lại không?",
                 strategy_used="fallback",
                 sources=[],
-                confidence=0.1,
-                citations=[],
+                                citations=[],
                 explanation="Error occurred, used fallback response",
                 processing_time=processing_time
             )
@@ -133,7 +126,6 @@ class SmartResponseRouter:
                 response=ai_response,
                 strategy_used="rag_only",
                 sources=doc_result['sources'],
-                confidence=intent_analysis.confidence,
                 citations=doc_result['sources'],
                 explanation=f"Used RAG approach - {intent_analysis.reasoning}",
                 processing_time=0.0  # Will be set by caller
@@ -172,7 +164,7 @@ class SmartResponseRouter:
                 response=response,
                 strategy_used="general_knowledge",
                 sources=[],
-                confidence=intent_analysis.confidence,
+                  # High confidence for general knowledge
                 citations=[],
                 explanation=f"Used general AI knowledge - {intent_analysis.reasoning}",
                 processing_time=0.0  # Will be set by caller
@@ -185,8 +177,7 @@ class SmartResponseRouter:
                 response="Xin lỗi, mình không thể trả lời câu hỏi này lúc này. Bạn có thể thử lại hoặc hỏi câu khác không?",
                 strategy_used="ultimate_fallback",
                 sources=[],
-                confidence=0.1,
-                citations=[],
+                                citations=[],
                 explanation="General knowledge failed, using ultimate fallback",
                 processing_time=0.0
             )
@@ -230,33 +221,47 @@ class SmartResponseRouter:
                 except Exception as e:
                     logger.warning(f"General knowledge response failed in hybrid mode: {e}")
 
-            # Combine responses intelligently
-            if doc_result and doc_result['has_content']:
-                # We have RAG content, generate response with context
-                try:
-                    ai_response = await self.ai_service.generate_response(
+            # RAG-first approach: always use RAG context when available, then supplement with general knowledge
+            try:
+                # Always try to generate response with RAG context first
+                if doc_result:
+                    # Try to generate RAG response even if content quality is low
+                    rag_response = await self.ai_service.generate_response(
                         query=query,
                         context=doc_result['context_texts']
                     )
 
-                    return ResponseResult(
-                        response=ai_response,
-                        strategy_used="hybrid_with_rag",
-                        sources=doc_result['sources'],
-                        confidence=intent_analysis.confidence,
-                        citations=doc_result['sources'],
-                        explanation=f"Used hybrid approach with RAG context - {intent_analysis.reasoning}",
-                        processing_time=0.0  # Will be set by caller
-                    )
-                except Exception as e:
-                    logger.error(f"Hybrid AI response generation failed: {e}")
-                    # Fallback to general knowledge
+                    # If we have a general knowledge response, enhance the RAG response
+                    if general_response and general_response.response:
+                        # Use RAG response as primary, but note that general knowledge was available
+                        return ResponseResult(
+                            response=rag_response,
+                            strategy_used="rag_first_with_general_available",
+                            sources=doc_result['sources'],
+                            citations=doc_result['sources'],
+                            explanation=f"RAG-first approach with general knowledge supplement - {intent_analysis.reasoning}",
+                            processing_time=0.0  # Will be set by caller
+                        )
+                    else:
+                        # RAG-only response
+                        return ResponseResult(
+                            response=rag_response,
+                            strategy_used="rag_only",
+                            sources=doc_result['sources'],
+                                                        citations=doc_result['sources'],
+                            explanation=f"RAG-first approach - {intent_analysis.reasoning}",
+                            processing_time=0.0  # Will be set by caller
+                        )
+                else:
+                    # No RAG content, fall back to general knowledge
                     if general_response:
                         return general_response
                     else:
                         return await self._generate_general_knowledge_response(query, intent_analysis, session_id)
-            else:
-                # No RAG content, use general knowledge
+
+            except Exception as e:
+                logger.error(f"RAG-first response generation failed: {e}")
+                # Fallback to general knowledge if RAG fails
                 if general_response:
                     return general_response
                 else:
@@ -289,8 +294,7 @@ class SmartResponseRouter:
             response=response,
             strategy_used="conversational",
             sources=[],
-            confidence=1.0,
-            citations=[],
+                        citations=[],
             explanation="Conversational response pattern matched",
             processing_time=0.0
         )
@@ -344,34 +348,77 @@ class SmartResponseRouter:
 
     def _create_vietnamese_general_prompt(self, query: str, intent_analysis: IntentAnalysis) -> str:
         """Create prompt for Vietnamese general knowledge response"""
-        return f"""Bạn là một người hướng dẫn chuyên nghiệp về Machine Learning và AI. Hãy trả lời câu hỏi sau một cách tự nhiên, thân thiện và chính xác.
+        return f"""Bạn là một người hướng dẫn chuyên nghiệp về Machine Learning và AI. Hãy trả lời câu hỏi sau một cách chi tiết, có cấu trúc và giáo dục.
 
 Câu hỏi: {query}
 
-Hướng dẫn:
-1. Trả lời bằng tiếng Việt tự nhiên
-2. Cung cấp thông tin chính xác và cập nhật
-3. Dùng ví dụ thực tế để minh họa
-4. Giải thích các khái niệm phức tạp một cách dễ hiểu
-5. Nếu đây là khái niệm cơ bản, giải thích từ đầu đến cuối
-6. Duy trì phong cách trò chuyện thân thiện
+HƯỚNG DẪN CHO CÂU TRẢ LỜI TOÀN DIỆN BẰNG TIẾNG VIỆT:
 
-Trả lời thật tự nhiên như đang nói chuyện với bạn học!"""
+1. CẤU TRÚC RÕ RÀNG:
+   ● **Định nghĩa cơ bản** - Giải thích khái niệm một cách rõ ràng
+   ● **Các thành phần chính** - Các yếu tố kỹ thuật quan trọng
+   ● **Quy trình hoạt động** - Cách hệ thống hoạt động
+   ● **Ứng dụng thực tế** - Ví dụ và cách sử dụng trong thực tế
+   ● **Đặc điểm nổi bật** - Điều gì làm nó độc đáo
+
+2. NỘI DUNG CHI TIẾT:
+   ● Dùng bullet points (●) và số thứ tự để dễ đọc
+   ● Bao gồm ví dụ cụ thể và ứng dụng thực tế
+   ● Giải thích thuật ngữ kỹ thuật khi xuất hiện lần đầu
+   ● Cân bằng giữa tính chính xác kỹ thuật và khả năng hiểu biết
+   ● Tạo các section rõ ràng với **bold** headings
+
+3. PHONG CÁCH VIẾT:
+   ● Chuyên nghiệp nhưng mang tính giáo dục cao
+   ● Bắt đầu trực tiếp với nội dung (không chào hỏi)
+   ● Dùng "**bold**" cho thuật ngữ quan trọng khi đề cập lần đầu
+   ● Duy trì tính nhất quán trong thuật ngữ kỹ thuật tiếng Việt
+
+SAI (quá ngắn gọn):
+- "Deep learning là một phương pháp tiếp cận AI..." (quá đơn giản)
+- Chỉ định nghĩa mà không có ví dụ hay giải thích
+
+ĐÚNG (toàn diện):
+- "Deep learning là một nhánh của học máy sử dụng mạng nơ-ron sâu..." (theo sau là giải thích chi tiết)
+
+Hãy cung cấp câu trả lời toàn diện, giáo dục và có cấu trúc rõ ràng!"""
 
     def _create_english_general_prompt(self, query: str, intent_analysis: IntentAnalysis) -> str:
         """Create prompt for English general knowledge response"""
-        return f"""You are a professional guide for Machine Learning and AI. Answer the following question naturally, friendly, and accurately.
+        return f"""You are a professional guide for Machine Learning and AI. Answer the following question with comprehensive, structured, and educational content.
 
 Question: {query}
 
-Guidelines:
-1. Provide accurate, up-to-date information
-2. Use practical examples to illustrate concepts
-3. Explain complex concepts in an easy-to-understand way
-4. For fundamental concepts, provide comprehensive explanations
-5. Maintain a conversational, friendly tone
+GUIDELINES FOR COMPREHENSIVE ENGLISH RESPONSES:
 
-Answer naturally as if talking to a learner!"""
+1. CLEAR STRUCTURE:
+   ● **Basic Definition** - Clear explanation of the concept
+   ● **Key Components** - Important technical elements
+   ● **How It Works** - The process and mechanics
+   ● **Real Applications** - Practical examples and use cases
+   ● **Key Characteristics** - What makes it unique from traditional approaches
+
+2. DETAILED CONTENT:
+   ● Use bullet points (●) and numbered lists for better readability
+   ● Include concrete examples and real-world applications
+   ● Explain technical terms clearly when they first appear
+   ● Balance technical accuracy with accessibility for learners
+   ● Create sections with clear headings using **bold** text
+
+3. WRITING STYLE:
+   ● Professional but highly educational tone
+   ● Start directly with content (no greetings)
+   ● Use "**bold**" for important terms on first mention
+   ● Maintain consistency in technical vocabulary
+
+WRONG (too brief):
+- "Deep learning is an AI approach..." (too simple)
+- Only definition without examples or explanations
+
+RIGHT (comprehensive):
+- "Deep learning is a branch of machine learning that uses deep neural networks..." (followed by detailed explanation)
+
+Provide comprehensive, educational, and well-structured answers!"""
 
     def _is_vietnamese_query(self, query: str) -> bool:
         """Simple check if query is in Vietnamese"""

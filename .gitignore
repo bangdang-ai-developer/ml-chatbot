@@ -342,8 +342,6 @@ desktop.ini
 *.txt
 !README.md
 !docs/
-!requirements.txt
-!**/requirements.txt
 !frontend/public/
 nginx/ssl/
 

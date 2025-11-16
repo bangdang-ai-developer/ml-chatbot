@@ -1,10 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
+import logging
 import google.generativeai as genai
 from ..models.chat import DocumentChunk
 from ..core.config import settings
 from ..core.exceptions import EmbeddingError
 from .vietnamese_text_service import VietnameseTextService
+
+logger = logging.getLogger(__name__)
 
 class EmbeddingService(ABC):
     """Abstract base class for embedding generation"""
@@ -31,33 +34,44 @@ class GeminiEmbeddingService(EmbeddingService):
 
             # Use the configured embedding model without adding models/ prefix
             self.model_name = settings.embedding_model
-            print(f"DEBUG: Initializing embeddings with model: {self.model_name}")
+            self.dimension = settings.embedding_dimension  # Use configurable embedding dimension
+            logger.debug(f"Initializing embeddings with model: {self.model_name}, dimension: {self.dimension}")
 
-            # Test model availability using the latest API patterns
+            # Test model availability using the latest API patterns with target dimension
             try:
                 test_embedding = genai.embed_content(
                     model=f"models/{self.model_name}",
                     content="test",
-                    task_type="retrieval_document"
-                )
-                print(f"DEBUG: Successfully initialized embedding model: {self.model_name}")
+                    task_type="retrieval_document",
+                                    )
+                actual_dimension = len(test_embedding['embedding'])
+                logger.info(f"Successfully initialized embedding model: {self.model_name} ({actual_dimension} dimensions)")
+
+                # Update dimension to actual model dimension
+                self.dimension = actual_dimension
+
             except Exception as model_error:
-                print(f"WARNING: Failed to initialize {self.model_name}, trying fallback models: {model_error}")
+                logger.warning(f"Failed to initialize {self.model_name} with {self.dimension} dimensions, trying fallback models: {model_error}")
                 # Try fallback models with latest available models
                 fallback_models = [
                     "text-embedding-004",
-                    "text-multilingual-embedding-002",
-                    "text-embedding-004"
+                    "text-multilingual-embedding-002"
                 ]
                 for fallback_model in fallback_models:
                     try:
                         test_embedding = genai.embed_content(
                             model=f"models/{fallback_model}",
                             content="test",
-                            task_type="retrieval_document"
-                        )
+                            task_type="retrieval_document",
+                                                    )
+                        actual_dimension = len(test_embedding['embedding'])
                         self.model_name = fallback_model
-                        print(f"DEBUG: Successfully initialized fallback model: {fallback_model}")
+                        logger.info(f"Successfully initialized fallback model: {fallback_model} ({actual_dimension} dimensions)")
+
+                        # Verify the dimension is correct
+                        if actual_dimension != self.dimension:
+                            logger.warning(f"Dimension mismatch for fallback: expected {self.dimension}, got {actual_dimension}")
+                            self.dimension = actual_dimension
                         break
                     except Exception:
                         continue
@@ -104,12 +118,12 @@ class GeminiEmbeddingService(EmbeddingService):
                 batch_texts = preprocessed_texts[i:i + batch_size]
 
                 try:
-                    # Generate embeddings using native Google API
+                    # Generate embeddings using native Google API with specified dimensions
                     result = genai.embed_content(
                         model=f"models/{self.model_name}",
                         content=batch_texts,
-                        task_type="retrieval_document"
-                    )
+                        task_type="retrieval_document",
+                                            )
 
                     # Extract embeddings from the result
                     batch_embeddings = result['embedding']
@@ -120,6 +134,12 @@ class GeminiEmbeddingService(EmbeddingService):
                         # Single embedding returned, replicate for each text
                         embedding = batch_embeddings
                         all_embeddings.extend([embedding] * len(batch_texts))
+
+                    # Verify embedding dimensions
+                    if all_embeddings:
+                        actual_dimension = len(all_embeddings[0]) if isinstance(all_embeddings[0], list) else len(all_embeddings)
+                        if actual_dimension != self.dimension:
+                            logger.warning(f"Embedding dimension mismatch: expected {self.dimension}, got {actual_dimension}")
 
                 except Exception as e:
                     raise EmbeddingError(f"Failed to generate embeddings for batch {i//batch_size}: {e}")
@@ -141,17 +161,22 @@ class GeminiEmbeddingService(EmbeddingService):
             # Preprocess query with Vietnamese language support
             preprocessed_query = self._preprocess_text(query.strip())
 
-            # Generate embedding using native Google API
+            # Generate embedding using native Google API with specified dimensions
             result = genai.embed_content(
                 model=f"models/{self.model_name}",
                 content=preprocessed_query,
-                task_type="retrieval_query"
-            )
+                task_type="retrieval_query",
+                            )
 
             embedding = result['embedding']
 
             if not embedding:
                 raise EmbeddingError("Failed to generate query embedding")
+
+            # Verify embedding dimensions
+            actual_dimension = len(embedding)
+            if actual_dimension != self.dimension:
+                logger.warning(f"Query embedding dimension mismatch: expected {self.dimension}, got {actual_dimension}")
 
             return embedding
 

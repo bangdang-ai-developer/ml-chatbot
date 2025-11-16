@@ -91,42 +91,61 @@ class GeminiAIService(AIService):
                 output_key="answer"
             )
 
-            # Create sophisticated RAG prompt template
+            # Create enhanced RAG prompt template for comprehensive responses
             self.rag_prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are an expert AI assistant specializing in machine learning and deep learning, trained on comprehensive ML/AI textbooks.
+                ("system", """You are a knowledgeable technical educator specializing in machine learning and deep learning. Your goal is to provide comprehensive, educational answers that help users understand complex concepts.
 
-Your role is to provide accurate, insightful answers about ML concepts using the provided context.
+Your role is to transform technical information from academic sources into clear, accessible explanations while maintaining accuracy.
 
-Guidelines:
-1. Use the provided context naturally without explicitly mentioning it
-2. Start answers directly (e.g., "Deep learning is..." not "Based on the context...")
-3. Answer naturally and conversationally while maintaining accuracy
-4. Provide specific examples and details from the context
-5. Structure answers with clear, logical progression
-6. Include relevant warnings or common mistakes when applicable
+GUIDELINES FOR COMPREHENSIVE VIETNAMESE RESPONSES:
+1. Structure with clear logical flow: definition → core concepts → practical aspects → applications
+2. Use bullet points (●) and numbered lists for better readability
+3. Include concrete examples and real-world applications
+4. Explain technical terms clearly when they first appear
+5. Balance technical accuracy with accessibility for learners
+6. Create sections with clear headings using **bold** text
 
-Answer Format:
-- Start with a direct answer
-- Provide supporting details from context
-- Include practical insights or implications
-- Mention limitations or edge cases if relevant"""),
-                ("human", """Context from ML/AI textbooks:
-{context}
+STRUCTURE YOUR RESPONSE AS FOLLOWS:
+**[Concept Definition]** - Clear definition and purpose
+**Core Components** - Key technical elements (neural networks, layers, etc.)
+**Learning Process** - How the system works (backpropagation, training)
+**Practical Applications** - Real-world uses and examples
+**Key Characteristics** - What makes it unique from traditional methods
 
-Question: {question}
+FOR TECHNICAL ACCURACY:
+- Always cite the provided context when relevant
+- Explain concepts step-by-step for clarity
+- Use precise terminology while keeping it understandable
+- Include both English and Vietnamese terms where helpful
 
-Answer the question naturally using the information provided below.""")
+RESPONSE STYLE:
+- Professional but educational tone
+- Start directly with content (no greetings)
+- Use "**bold** for important terms on first mention
+- Maintain consistency in Vietnamese technical vocabulary
+
+WRONG (too brief):
+- "Deep learning là một phương pháp tiếp cận AI..." (too simple)
+- Only definition without examples or explanations
+
+RIGHT (comprehensive):
+- "Deep learning là một nhánh của học máy sử dụng mạng nơ-ron sâu..." (followed by detailed explanation)"""),
+                ("user", "Context: {context}\n\nQuestion: {question}")
             ])
 
             # Create conversation prompt for interactive chat
             self.conversation_prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are a helpful AI assistant for machine learning education. Continue the conversation naturally while maintaining accuracy and educational value.
+                ("system", """You are a technical expert in machine learning and deep learning education.
 
 Guidelines:
-1. Be conversational yet professional
-2. Refer back to previous context when relevant
-3. Ask clarifying questions if the user's query is ambiguous
-4. Provide follow-up suggestions when appropriate"""),
+1. Be professional and direct, not conversational
+2. Never use greetings or filler phrases like "Chào bạn" or "Hy vọng"
+3. Start answers directly without introductions
+4. Refer back to previous context when relevant
+5. Ask clarifying questions only when the query is ambiguous
+6. Use technical Vietnamese writing style without chatbot language
+
+For Vietnamese responses: Never use conversational elements. Be direct and professional."""),
                 ("human", "{question}")
             ])
 
@@ -201,24 +220,65 @@ Guidelines:
             raise AIServiceError("Query cannot be empty")
 
         if not context:
-            return """I don't have any relevant context from Andrew Ng's Machine Learning Yearning to answer your question.
+            logger.warning(f"No context provided for query: {query[:50]}...")
+            return """I don't have any relevant context from Ian Goodfellow's Deep Learning book to answer your question.
 
-Please try asking about specific machine learning concepts such as:
-- Supervised vs unsupervised learning
-- Model evaluation and validation
-- Training/dev/test sets
-- Bias and variance
-- Neural networks
-- Or other ML topics covered in Andrew Ng's book."""
+Please try asking about specific deep learning concepts such as:
+- Convolutional neural networks (CNNs)
+- Recurrent neural networks (RNNs) and LSTMs
+- Backpropagation and gradient computation
+- Deep learning architectures and optimization
+- Regularization techniques like dropout
+- Or other deep learning topics covered in the Ian Goodfellow Deep Learning book."""
 
         try:
-            # Prepare input for RAG chain
+            # Prepare input for RAG chain with validation
+            clean_query = query.strip()
+            clean_context = [ctx.strip() for ctx in context if ctx and ctx.strip()]
+
+            if not clean_context:
+                logger.warning(f"All context items were empty after cleaning for query: {clean_query[:50]}...")
+                return """I don't have any relevant context from Ian Goodfellow's Deep Learning book to answer your question.
+
+Please try asking about specific deep learning concepts such as:
+- Convolutional neural networks (CNNs)
+- Recurrent neural networks (RNNs) and LSTMs
+- Backpropagation and gradient computation
+- Deep learning architectures and optimization
+- Regularization techniques like dropout
+- Or other deep learning topics covered in the Ian Goodfellow Deep Learning book."""
+
             chain_input = {
-                "query": query.strip(),
-                "context": context
+                "query": clean_query,
+                "context": clean_context
             }
 
+            # Enhanced logging for RAG chain input analysis
+            total_context_chars = sum(len(ctx) for ctx in clean_context)
+            avg_context_length = total_context_chars / len(clean_context) if clean_context else 0
+
+            logger.info(f"[RAG CHAIN] Input analysis for query: '{clean_query[:50]}...'")
+            logger.debug(f"[RAG CHAIN]   - Context items: {len(clean_context)}")
+            logger.debug(f"[RAG CHAIN]   - Total context length: {total_context_chars} chars")
+            logger.debug(f"[RAG CHAIN]   - Average context length: {avg_context_length:.1f} chars")
+            logger.debug(f"[RAG CHAIN]   - Query length: {len(clean_query)} chars")
+
+            # Log context quality indicators
+            for i, ctx in enumerate(clean_context[:3]):  # Log first 3 contexts
+                ctx_preview = ctx[:150].replace('\n', ' ')
+                logger.debug(f"[RAG CHAIN] Context {i+1}: '{ctx_preview}...'")
+
+            # Log the complete final prompt being sent to Gemini
+            logger.info(f"[RAG CHAIN] === FINAL PROMPT SENT TO GEMINI ===")
+            logger.info(f"[RAG CHAIN] Query: '{clean_query}'")
+            logger.info(f"[RAG CHAIN] Complete Context ({len(clean_context)} items):")
+            for i, ctx in enumerate(clean_context):
+                ctx_clean = ctx.replace('\n', ' ').replace('\r', ' ')
+                logger.info(f"[RAG CHAIN] Context {i+1}: {ctx_clean}")
+            logger.info(f"[RAG CHAIN] === END FINAL PROMPT ===")
+
             # Generate response with timeout and error handling
+            logger.debug(f"[RAG CHAIN] Invoking RAG chain with timeout=30.0s")
             response = await asyncio.wait_for(
                 self.rag_chain.ainvoke(chain_input),
                 timeout=30.0

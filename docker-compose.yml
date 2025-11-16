@@ -75,10 +75,12 @@ services:
       - MILVUS_HOST=milvus
       - MILVUS_PORT=19530
       - PDF_PATH=/app/data/andrew-ng-machine-learning-yearning.pdf
+      - EMBEDDING_DIMENSION=768
     ports:
       - "8000:8000"
     volumes:
       - ./andrew-ng-machine-learning-yearning.pdf:/app/data/andrew-ng-machine-learning-yearning.pdf:ro
+      - ./Deep+Learning+Ian+Goodfellow.pdf:/app/data/Deep+Learning+Ian+Goodfellow.pdf:ro
     depends_on:
       milvus:
         condition: service_healthy

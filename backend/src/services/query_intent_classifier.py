@@ -24,7 +24,6 @@ class QueryIntent(Enum):
 class IntentAnalysis:
     """Result of intent classification"""
     intent: QueryIntent
-    confidence: float
     reasoning: str
     specific_entities: List[str]
     question_type: str
@@ -52,7 +51,32 @@ class QueryIntentClassifier:
             'training', 'dataset', 'epoch', 'batch', 'weight', 'bias', 'layer',
             'convolutional', 'recurrent', 'lstm', 'rnn', 'cnn', 'transformer',
             'attention', 'embedding', 'vector', 'matrix', 'tensor', 'pytorch',
-            'tensorflow', 'keras', 'goodfellow', 'bengio', 'lecun'
+            'tensorflow', 'keras', 'goodfellow', 'bengio', 'lecun',
+            # Mathematical terms for ML/DL
+            'eigendecomposition', 'eigenvalue', 'eigenvector', 'eigenvalues', 'eigenvectors',
+            'singular value decomposition', 'svd', 'matrix decomposition', 'matrix factorization',
+            'principal component analysis', 'pca', 'covariance matrix', 'linear algebra',
+            'singular values', 'orthogonal', 'matrix multiplication', 'transpose', 'inverse',
+            'determinant', 'trace', 'norm', 'vector space', 'linear transformation',
+            'quadratic form', 'positive definite', 'symmetric matrix', 'diagonalization',
+            # Vietnamese ML terms that should use RAG
+            'phép toán tích chập', 'convolution', 'tích chập', 'mạng nơ-ron tích chập', 'cnn',
+            'truyền ngược', 'backpropagation', 'lan truyền ngược', 'gradient descent',
+            'học sâu', 'deep learning', 'mạng nơ-ron', 'neural network', 'trí tuệ nhân tạo',
+            'artificial intelligence', 'học máy', 'machine learning', 'hàm mất mát',
+            'loss function', 'hàm kích hoạt', 'activation function', 'tối ưu hóa',
+            'optimization', 'siêu tham số', 'hyperparameter', 'tốc độ học',
+            'learning rate', 'kiểm tra chéo', 'cross-validation', 'quá khớp',
+            'overfitting', 'dưới khớp', 'underfitting', 'tập huấn', 'training',
+            'bộ dữ liệu', 'dataset', 'trọng số', 'weights', 'thiên kiến',
+            'bias', 'lớp', 'layer', 'goodfellow', 'ian goodfellow',
+            # Vietnamese mathematical terms
+            'phân rã riêng', 'giá trị riêng', 'vector riêng', 'giá trị riêng vector riêng',
+            'phân rã giá trị riêng lẻ', 'phân rã ma trận', 'phân nhân ma trận',
+            'phân tích thành phần chính', 'pca', 'ma trận hiệp phương sai',
+            'đại số tuyến tính', 'không gian vector', 'biến đổi tuyến tính',
+            'ma trận đối xứng', 'ma trận xác định dương', 'chéo hóa',
+            'định thức', 'vết', 'chuẩn', 'nhiễu', 'ma trận nghịch đảo'
         }
 
         # General ML/AI concepts that can use general knowledge
@@ -84,7 +108,6 @@ class QueryIntentClassifier:
             if conversational_score > 0.7:
                 return IntentAnalysis(
                     intent=QueryIntent.CONVERSATIONAL,
-                    confidence=conversational_score,
                     reasoning="Query matches conversational patterns",
                     specific_entities=[],
                     question_type="conversational",
@@ -106,34 +129,29 @@ class QueryIntentClassifier:
             else:
                 complexity_level = "medium"
 
-            # Enhanced decision logic with much lower thresholds for better classification
+            # Enhanced decision logic without confidence calculations
             if document_score > 0.2:
                 # Clear document-specific case - very sensitive threshold
                 intent = QueryIntent.DOCUMENT_SPECIFIC
-                confidence = min(document_score + 0.3, 1.0)  # Boost confidence slightly
                 reasoning = f"Query matches document-specific content ({document_score:.2f})"
             elif general_score > 0.15:
                 # Clear general knowledge case - very sensitive threshold
                 intent = QueryIntent.GENERAL_KNOWLEDGE
-                confidence = min(general_score + 0.3, 1.0)  # Boost confidence slightly
                 reasoning = f"Query is well-suited for general knowledge ({general_score:.2f})"
             elif document_score > 0.1 and general_score > 0.1:
                 # Strong hybrid case - both RAG and general knowledge beneficial
                 intent = QueryIntent.HYBRID
-                confidence = min(document_score + general_score, 1.0) * 0.7  # Reduce confidence for hybrid
                 reasoning = f"Query benefits from both document content ({document_score:.2f}) and general knowledge ({general_score:.2f})"
             else:
                 # Only default to hybrid for truly ambiguous cases
                 intent = QueryIntent.HYBRID
-                confidence = 0.15  # Much lower confidence for truly ambiguous cases
-                reasoning = "Query is ambiguous, using hybrid approach with low confidence"
+                reasoning = "Query is ambiguous, using hybrid approach"
 
             # Determine question type
             question_type = self._determine_question_type(normalized_query)
 
             return IntentAnalysis(
                 intent=intent,
-                confidence=confidence,
                 reasoning=reasoning,
                 specific_entities=doc_entities,
                 question_type=question_type,
@@ -145,7 +163,6 @@ class QueryIntentClassifier:
             # Default to hybrid on error
             return IntentAnalysis(
                 intent=QueryIntent.HYBRID,
-                confidence=0.5,
                 reasoning="Classification failed, using hybrid fallback",
                 specific_entities=[],
                 question_type="unknown",
@@ -282,16 +299,11 @@ class QueryIntentClassifier:
             strategy['use_general_knowledge'] = True
             strategy['primary_source'] = 'ai_knowledge'
         elif intent_analysis.intent == QueryIntent.HYBRID:
-            # Use both, prioritize based on context quality
-            if context_quality > 0.3:
-                strategy['use_rag'] = True
-                strategy['use_general_knowledge'] = True
-                strategy['primary_source'] = 'hybrid'
-                strategy['citation_required'] = True
-            else:
-                strategy['use_general_knowledge'] = True
-                strategy['primary_source'] = 'ai_knowledge'
-                strategy['fallback_enabled'] = True
+            # Always use both RAG and general knowledge for hybrid queries
+            strategy['use_rag'] = True
+            strategy['use_general_knowledge'] = True
+            strategy['primary_source'] = 'hybrid'
+            strategy['citation_required'] = True
         elif intent_analysis.intent == QueryIntent.CONVERSATIONAL:
             strategy['use_general_knowledge'] = True
             strategy['primary_source'] = 'conversational'

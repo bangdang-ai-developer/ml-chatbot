@@ -75,8 +75,7 @@ async def chat(
         chat_response = ChatResponse(
             message=response_result.response,
             session_id=request.session_id or "default",
-            sources=response_result.sources if response_result.sources else None,
-            confidence=response_result.confidence
+            sources=response_result.sources if response_result.sources else None
         )
 
         # Log routing information
@@ -139,6 +138,52 @@ async def get_chatbot_stats(
         logger.error(f"Failed to get chatbot stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to get chatbot stats")
 
+@router.post("/debug-search")
+async def debug_search(
+    request: dict,
+    rag_service: RAGService = Depends(get_rag_service)
+):
+    """Debug endpoint to inspect search results and retrieved content"""
+    try:
+        query = request.get("query", "")
+        logger.info(f"Debug search for query: {query}")
+
+        # Generate embedding for the query
+        query_embedding = await rag_service.embedding_service.generate_query_embedding(query)
+
+        # Search for similar documents
+        similar_docs = await rag_service.vector_repository.search_similar(
+            query_embedding=query_embedding,
+            limit=10  # Get more docs for debugging
+        )
+
+        # Format results for inspection
+        results = []
+        for i, doc in enumerate(similar_docs):
+            results.append({
+                "rank": i + 1,
+                "chunk_id": doc.id,
+                "content_preview": doc.content[:200] + "..." if len(doc.content) > 200 else doc.content,
+                "full_content": doc.content,
+                "content_length": len(doc.content),
+                "metadata": doc.metadata,
+                "similarity_score": getattr(doc, 'distance', None)  # If available
+            })
+
+        return {
+            "query": query,
+            "total_results": len(results),
+            "retrieved_chunks": results,
+            "search_params": {
+                "limit": 10,
+                "threshold": 0.2
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Debug search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Debug search failed: {e}")
+
 @router.post("/reindex")
 async def reindex_documents(
     background_tasks: BackgroundTasks,
@@ -180,9 +225,9 @@ async def index_document_task(rag_service: RAGService):
                 logger.info(f"Chunking text from {pdf_name}...")
                 text_chunks = await doc_service.chunk_text(text)
 
-                # Create document chunks with source info
+                # Create document chunks
                 logger.info(f"Creating {len(text_chunks)} document chunks from {pdf_name}...")
-                document_chunks = await doc_service.create_document_chunks(text_chunks, source=pdf_name)
+                document_chunks = await doc_service.create_document_chunks(text_chunks)
 
                 all_document_chunks.extend(document_chunks)
 
@@ -229,9 +274,9 @@ async def reindex_task(rag_service: RAGService):
                 logger.info(f"Chunking text from {pdf_name}...")
                 text_chunks = await doc_service.chunk_text(text)
 
-                # Create document chunks with source info
+                # Create document chunks
                 logger.info(f"Creating {len(text_chunks)} document chunks from {pdf_name}...")
-                document_chunks = await doc_service.create_document_chunks(text_chunks, source=pdf_name)
+                document_chunks = await doc_service.create_document_chunks(text_chunks)
 
                 all_document_chunks.extend(document_chunks)
 
@@ -253,3 +298,5 @@ async def reindex_task(rag_service: RAGService):
 
     except Exception as e:
         logger.error(f"Multi-document reindexing failed: {e}")
+
+
